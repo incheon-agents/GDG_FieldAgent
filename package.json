@@ -1,0 +1,14 @@
+{
+  "name": "jigeum-galrae",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "description": "지금갈래? — 현재 위치·시간·상황 기반 인천 즉시 출발 큐레이터",
+  "scripts": {
+    "dev": "vercel dev",
+    "test": "node --test test/*.test.js"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

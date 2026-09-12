@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="theme-color" content="#ff5a36" />
   <title>지금갈래? — 인천 즉시 출발 큐레이터</title>
+  <meta name="description" content="지금 이 자리에서, 남은 시간 안에 갈 수 있는 인천의 한 곳을 골라주는 Agent." />
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
@@ -12,49 +13,73 @@
     <header class="hero">
       <div class="eyebrow"><span class="pulse"></span> INCHEON, RIGHT NOW</div>
       <h1>지금,<br /><em>어디 갈래?</em></h1>
-      <p>남은 시간과 오늘의 기분을 알려주세요.<br />인천에서 지금 출발할 한 곳을 골라드릴게요.</p>
+      <p>인천 사는 지인한테 전화 걸듯 물어보세요.<br />지금 출발해서 갈 수 있는 곳만 골라드릴게요.</p>
     </header>
 
-    <section class="panel form-panel" aria-labelledby="form-title">
-      <div class="section-heading"><span>01</span><h2 id="form-title">지금의 상황</h2></div>
+    <section class="panel" aria-labelledby="where-title">
+      <div class="section-heading"><span>01</span><h2 id="where-title">지금 어디예요?</h2></div>
+      <button class="locate-button" id="locate" type="button">
+        <span>📍 현재 위치 사용</span><i id="locateState">GPS</i>
+      </button>
+      <label class="field-label" for="landmark">위치를 못 잡으면 기준점을 골라주세요</label>
+      <div class="select-wrap"><select id="landmark" aria-label="기준 위치"></select></div>
+      <p class="location-readout" id="locationReadout" aria-live="polite"></p>
+    </section>
+
+    <section class="panel" aria-labelledby="when-title">
+      <div class="section-heading"><span>02</span><h2 id="when-title">얼마나, 어떻게</h2></div>
       <label class="field-label" for="timeRange">얼마나 머물 수 있나요?</label>
-      <div class="chips" id="timeRange">
-        <button class="chip" type="button" data-time="60">1시간</button>
-        <button class="chip selected" type="button" data-time="90">1시간 30분</button>
-        <button class="chip" type="button" data-time="120">2시간+</button>
+      <div class="chips" id="timeRange" role="group" aria-label="남은 시간">
+        <button class="chip" type="button" data-time="60" aria-pressed="false">60분</button>
+        <button class="chip selected" type="button" data-time="90" aria-pressed="true">90분</button>
+        <button class="chip" type="button" data-time="120" aria-pressed="false">2시간</button>
+        <button class="chip" type="button" data-time="240" aria-pressed="false">반나절</button>
       </div>
 
       <label class="field-label" for="transport">어떻게 이동할까요?</label>
-      <div class="select-wrap"><select id="transport" aria-label="이동수단"><option value="walk">도보</option><option value="transit" selected>대중교통</option><option value="car">차량</option></select></div>
-
-      <label class="field-label">무엇을 하고 싶나요?</label>
-      <div class="mood-grid" id="moods">
-        <button type="button" class="mood selected" data-mood="food"><b>🍜</b> 든든하게 먹기</button>
-        <button type="button" class="mood" data-mood="photo"><b>📷</b> 사진 남기기</button>
-        <button type="button" class="mood" data-mood="rest"><b>☕</b> 조용히 쉬기</button>
-        <button type="button" class="mood" data-mood="walk"><b>🚶</b> 가볍게 걷기</button>
+      <div class="select-wrap">
+        <select id="transport" aria-label="이동수단">
+          <option value="walk">도보</option>
+          <option value="transit" selected>대중교통</option>
+          <option value="car">차량</option>
+        </select>
       </div>
     </section>
 
-    <section class="panel observation-panel">
-      <div class="section-heading"><span>02</span><h2>현장에서 발견한 것</h2></div>
-      <label class="field-label" for="observation">사진이나 메모를 남겨보세요 <small>(선택)</small></label>
-      <textarea id="observation" maxlength="160" placeholder="예: 차이나타운은 점심 대기 줄이 길고, 골목에 조용한 카페가 눈에 띄었어요."></textarea>
+    <section class="panel" aria-labelledby="what-title">
+      <div class="section-heading"><span>03</span><h2 id="what-title">뭐 하고 싶어요?</h2></div>
+      <div class="mood-grid" id="purposes" role="group" aria-label="목적"></div>
+    </section>
+
+    <section class="panel" aria-labelledby="note-title">
+      <div class="section-heading"><span>04</span><h2 id="note-title">현장에서 발견한 것</h2></div>
+      <label class="field-label" for="observation">지금 눈앞 상황을 한 줄로 <small>(선택)</small></label>
+      <textarea id="observation" maxlength="160"
+        placeholder="예: 차이나타운 점심 대기 줄이 길고, 비가 조금씩 오기 시작했어요."></textarea>
       <div class="char-count"><span id="count">0</span>/160</div>
     </section>
 
-    <button class="recommend-button" id="recommend" type="button"><span>나만의 장소 찾기</span><i>→</i></button>
+    <button class="recommend-button" id="recommend" type="button">
+      <span id="recommendLabel">코스 짜줘</span><i>→</i>
+    </button>
 
     <section class="results" id="results" aria-live="polite" hidden>
-      <div class="result-intro"><span>AGENT PICK</span><h2>지금 출발한다면,<br /><em>이곳을 추천해요.</em></h2></div>
+      <div class="result-intro">
+        <span id="resultBadge">AGENT COURSE</span>
+        <h2>지금 출발하면,<br /><em>이 순서가 딱이에요.</em></h2>
+      </div>
       <article class="place-card primary" id="primaryCard"></article>
-      <div class="more-title">다른 선택지도 있어요</div>
+      <ol class="course-steps" id="courseSteps"></ol>
+      <div class="course-summary" id="courseSummary"></div>
+      <div class="more-title" id="altTitle">다른 코스도 있어요</div>
       <div class="alternatives" id="alternatives"></div>
       <p class="agent-note" id="agentNote"></p>
     </section>
 
+    <p class="status" id="status" role="status" hidden></p>
+
     <footer>FIELD AGENT TRIP · INCHEON</footer>
   </main>
-  <script src="app.js"></script>
+  <script type="module" src="app.js"></script>
 </body>
 </html>
