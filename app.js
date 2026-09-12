@@ -1,7 +1,7 @@
 /**
  * 브라우저 진입점.
  *
- * /api/recommend 가 있으면 거기(= RunYourAI 라우터 경유)로 묻고,
+ * /api/recommend 가 있으면 거기(= Vercel AI Gateway 경유 Gemini)로 묻고,
  * 없거나 실패하면 같은 로직의 로컬 계산으로 조용히 떨어진다.
  * GitHub Pages처럼 함수가 없는 환경에서도 앱이 그대로 동작하는 이유.
  */
@@ -230,7 +230,7 @@ function render(result) {
 }
 
 function badgeFor(result) {
-  if (result.source === 'router') return 'AGENT COURSE · LIVE';
+  if (result.source === 'model') return 'AGENT COURSE · LIVE';
   return result.degraded ? 'AGENT COURSE · OFFLINE' : 'AGENT COURSE';
 }
 
@@ -244,8 +244,8 @@ function noteFor(result) {
   const parts = [];
   if (result.isRaining) parts.push('지금 비가 와서 실내 위주로 봤어요.');
   if (result.note) parts.push(result.note);
-  // 메모는 라우터를 거칠 때만 실제로 반영된다. 로컬 폴백에서 "반영했다"고 말하지 않는다.
-  if (result.source === 'router' && state.note.trim()) {
+  // 메모는 모델을 거칠 때만 실제로 반영된다. 로컬 폴백에서 "반영했다"고 말하지 않는다.
+  if (result.source === 'model' && state.note.trim()) {
     parts.push(`메모 “${state.note.trim()}”도 반영했어요.`);
   } else if (state.note.trim()) {
     parts.push('(오프라인 모드라 현장 메모는 이번 추천에 반영되지 않았어요.)');

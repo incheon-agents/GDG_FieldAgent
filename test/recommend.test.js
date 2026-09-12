@@ -114,7 +114,7 @@ test('대안 코스는 1코스가 서로 다르다', () => {
 
 /* ------------------------------------------------------------------- API */
 
-test('라우터 키가 없으면 로컬 코스를 그대로 반환한다', async () => {
+test('게이트웨이 키가 없으면 로컬 코스를 그대로 반환한다', async () => {
   const restore = stubNetwork();
   try {
     const res = await invoke({ lat: INCHEON_STN[0], lng: INCHEON_STN[1], minutes: 90, transport: 'transit', purpose: 'solo_meal' });
@@ -127,8 +127,8 @@ test('라우터 키가 없으면 로컬 코스를 그대로 반환한다', async
   }
 });
 
-test('라우터가 만들어내지 않은 코스 id를 돌려주면 폴백한다', async () => {
-  const restore = stubRouter({ courseId: 'starfield+anseong', note: '지어낸 코스' });
+test('모델이 만들어내지 않은 코스 id를 돌려주면 폴백한다', async () => {
+  const restore = stubModel({ courseId: 'starfield+anseong', note: '지어낸 코스' });
   try {
     const res = await invoke({ lat: INCHEON_STN[0], lng: INCHEON_STN[1], minutes: 90, transport: 'transit', purpose: 'solo_meal' });
     assert.equal(res.body.source, 'local');
@@ -139,25 +139,61 @@ test('라우터가 만들어내지 않은 코스 id를 돌려주면 폴백한다
   }
 });
 
-test('라우터가 고른 코스와 문구를 쓰되 동선은 서버 계산을 유지한다', async () => {
+test('모델이 고른 코스와 문구를 쓰되 동선은 서버 계산을 유지한다', async () => {
   const input = { coord: INCHEON_STN, transport: 'transit', minutes: 120, purpose: 'solo_meal', now: undefined };
   const generated = buildCourses(input, 3);
   const target = generated[1] ?? generated[0];
 
-  const restore = stubRouter({
+  const restore = stubModel({
     courseId: target.id,
     reasons: { [target.stops[0].place.id]: '지금 시간이면 줄이 짧아요.' },
     note: '여기부터 도는 게 나아요.'
   });
   try {
     const res = await invoke({ lat: INCHEON_STN[0], lng: INCHEON_STN[1], minutes: 120, transport: 'transit', purpose: 'solo_meal' });
-    assert.equal(res.body.source, 'router');
+    assert.equal(res.body.source, 'model');
     assert.equal(res.body.course.id, target.id);
     assert.equal(res.body.course.stops[0].reason, '지금 시간이면 줄이 짧아요.');
     assert.equal(res.body.note, '여기부터 도는 게 나아요.');
     // 모델은 문구만 바꿀 수 있다. 시간 계산은 서버 것이 그대로 남아야 한다.
     assert.equal(res.body.course.totalMin, target.totalMin);
     assert.ok(res.body.course.totalMin <= 120);
+  } finally {
+    restore();
+  }
+});
+
+test('AI Gateway 요청이 문서화된 엔드포인트·헤더·모델로 나간다', async () => {
+  const target = buildCourses({ coord: INCHEON_STN, transport: 'transit', minutes: 90, purpose: 'solo_meal' }, 1)[0];
+  const seen = [];
+  const restore = stubModel({ courseId: target.id }, seen);
+  try {
+    await invoke({ lat: INCHEON_STN[0], lng: INCHEON_STN[1], minutes: 90, transport: 'transit', purpose: 'solo_meal' });
+
+    const call = seen.find(c => !String(c.url).includes('open-meteo'));
+    assert.ok(call, 'AI Gateway 호출이 발생하지 않음');
+    assert.equal(call.url, 'https://ai-gateway.vercel.sh/v1/chat/completions');
+    assert.equal(call.init.headers.Authorization, 'Bearer test-key');
+
+    const body = JSON.parse(call.init.body);
+    assert.equal(body.model, 'google/gemini-test');
+    assert.deepEqual(body.response_format, { type: 'json_object' });
+    assert.equal(body.messages[0].role, 'system');
+    // 코스 후보가 프롬프트에 실제로 실려 나가야 모델이 그중에서 고를 수 있다.
+    assert.match(body.messages[1].content, new RegExp(`코스 id=${target.id.replace(/\+/g, '\\+')}`));
+  } finally {
+    restore();
+  }
+});
+
+test('OIDC 토큰만 있어도 호출한다 (Vercel 배포 기본 경로)', async () => {
+  const seen = [];
+  const restore = stubModel({ courseId: 'nope' }, seen, { useOidc: true });
+  try {
+    await invoke({ lat: INCHEON_STN[0], lng: INCHEON_STN[1], minutes: 90, transport: 'transit', purpose: 'solo_meal' });
+    const call = seen.find(c => !String(c.url).includes('open-meteo'));
+    assert.ok(call, 'OIDC 토큰만으로는 호출하지 않음');
+    assert.equal(call.init.headers.Authorization, 'Bearer oidc-token');
   } finally {
     restore();
   }
@@ -189,11 +225,12 @@ async function invoke(body) {
   return captured;
 }
 
-/** 날씨 호출만 가로채고 라우터 키는 비워 둔다. */
+/** 날씨 호출만 가로채고 게이트웨이 키는 비워 둔다. */
 function stubNetwork() {
   const originalFetch = globalThis.fetch;
   const originalEnv = { ...process.env };
-  delete process.env.RUNYOURAI_API_KEY;
+  delete process.env.AI_GATEWAY_API_KEY;
+  delete process.env.VERCEL_OIDC_TOKEN;
 
   globalThis.fetch = async () => jsonResponse({ current: { precipitation: 0, weather_code: 0 } });
 
@@ -203,16 +240,21 @@ function stubNetwork() {
   };
 }
 
-/** 라우터와 날씨 호출을 모두 가로채서 네트워크 없이 테스트한다. */
-function stubRouter(payload) {
+/** 모델과 날씨 호출을 모두 가로채서 네트워크 없이 테스트한다. */
+function stubModel(payload, seen = [], { useOidc = false } = {}) {
   const originalFetch = globalThis.fetch;
   const originalEnv = { ...process.env };
 
-  process.env.RUNYOURAI_API_KEY = 'test-key';
-  process.env.RUNYOURAI_BASE_URL = 'https://example.invalid/v1';
-  process.env.RUNYOURAI_MODEL = 'test-model';
+  if (useOidc) {
+    delete process.env.AI_GATEWAY_API_KEY;
+    process.env.VERCEL_OIDC_TOKEN = 'oidc-token';
+  } else {
+    process.env.AI_GATEWAY_API_KEY = 'test-key';
+  }
+  process.env.GEMINI_MODEL = 'google/gemini-test';
 
-  globalThis.fetch = async url => {
+  globalThis.fetch = async (url, init) => {
+    seen.push({ url, init });
     if (String(url).includes('open-meteo')) {
       return jsonResponse({ current: { precipitation: 0, weather_code: 0 } });
     }
