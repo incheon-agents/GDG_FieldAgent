@@ -65,11 +65,13 @@
 
     <section class="results" id="results" aria-live="polite" hidden>
       <div class="result-intro">
-        <span id="resultBadge">AGENT PICK</span>
-        <h2>지금 출발한다면,<br /><em>여기부터 가세요.</em></h2>
+        <span id="resultBadge">AGENT COURSE</span>
+        <h2>지금 출발하면,<br /><em>이 순서가 딱이에요.</em></h2>
       </div>
       <article class="place-card primary" id="primaryCard"></article>
-      <div class="more-title">이어서 가거나, 대신 갈 만한 곳</div>
+      <ol class="course-steps" id="courseSteps"></ol>
+      <div class="course-summary" id="courseSummary"></div>
+      <div class="more-title" id="altTitle">다른 코스도 있어요</div>
       <div class="alternatives" id="alternatives"></div>
       <p class="agent-note" id="agentNote"></p>
     </section>

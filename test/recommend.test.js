@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { rankPlaces, estimateTravelMin, openState, recommendLocally } from '../lib/recommend.js';
+import { rankPlaces, estimateTravelMin, openState, recommendLocally, buildCourses } from '../lib/recommend.js';
 import { PLACE_BY_ID } from '../lib/places.js';
 import handler from '../api/recommend.js';
 
@@ -52,42 +52,112 @@ test('비가 오면 실내 장소가 위로 올라온다', () => {
   assert.ok(wet.filter(c => c.place.indoor).length >= dry.filter(c => c.place.indoor).length);
 });
 
-test('라우터 키가 없으면 로컬 결과를 그대로 반환한다', async () => {
+/* ------------------------------------------------------------------ 코스 */
+
+test('코스 전체가 남은 시간 예산 안에 들어간다', () => {
+  for (const minutes of [60, 90, 120, 240]) {
+    const courses = buildCourses({
+      coord: INCHEON_STN, transport: 'transit', minutes, purpose: 'photo', now: SAT_1400
+    }, 3);
+    assert.ok(courses.length > 0, `${minutes}분 코스가 나오지 않음`);
+
+    for (const course of courses) {
+      assert.ok(course.totalMin <= minutes, `${minutes}분 예산을 ${course.totalMin}분이 초과`);
+      assert.ok(course.slackMin >= 0);
+      // 같은 장소를 두 번 들르지 않는다.
+      const ids = course.stops.map(s => s.place.id);
+      assert.equal(new Set(ids).size, ids.length);
+    }
+  }
+});
+
+test('두 번째 이후 장소도 도착 시각 기준으로 영업 상태를 본다', () => {
+  // 한국시간 17:30 출발이면 18시 마감인 곳은 뒷 순서에 올 수 없다.
+  const evening = new Date('2026-09-12T08:30:00Z');
+  const courses = buildCourses({
+    coord: INCHEON_STN, transport: 'walk', minutes: 180, purpose: 'photo', now: evening
+  }, 3);
+
+  for (const course of courses) {
+    for (const stop of course.stops) {
+      assert.notEqual(stop.state, 'closed');
+      if (stop.place.hours) {
+        const close = Number(stop.place.hours.close.split(':')[0]) * 60 + Number(stop.place.hours.close.split(':')[1]);
+        assert.ok(stop.arrivalMin % 1440 < close, `${stop.place.name} 도착이 마감 이후`);
+      }
+    }
+  }
+});
+
+test('시간이 늘어나면 코스가 길어진다', () => {
+  const short = buildCourses({ coord: INCHEON_STN, transport: 'transit', minutes: 60, purpose: 'photo', now: SAT_1400 }, 1);
+  const long = buildCourses({ coord: INCHEON_STN, transport: 'transit', minutes: 240, purpose: 'photo', now: SAT_1400 }, 1);
+  assert.ok(long[0].stops.length > short[0].stops.length);
+});
+
+test('비가 오면 실내 장소만으로 코스를 짠다', () => {
+  const input = { coord: INCHEON_STN, transport: 'transit', minutes: 120, purpose: 'photo', now: SAT_1400 };
+  const wet = buildCourses({ ...input, isRaining: true }, 3);
+  assert.ok(wet.length > 0);
+  for (const course of wet) {
+    assert.ok(course.stops.every(s => s.place.indoor), '비 오는 날 코스에 실외 장소가 섞임');
+  }
+});
+
+test('대안 코스는 1코스가 서로 다르다', () => {
+  const courses = buildCourses({
+    coord: INCHEON_STN, transport: 'transit', minutes: 120, purpose: 'walk', now: SAT_1400
+  }, 3);
+  const firsts = courses.map(c => c.stops[0].place.id);
+  assert.equal(new Set(firsts).size, firsts.length);
+});
+
+/* ------------------------------------------------------------------- API */
+
+test('라우터 키가 없으면 로컬 코스를 그대로 반환한다', async () => {
   const restore = stubNetwork();
   try {
     const res = await invoke({ lat: INCHEON_STN[0], lng: INCHEON_STN[1], minutes: 90, transport: 'transit', purpose: 'solo_meal' });
     assert.equal(res.status, 200);
     assert.equal(res.body.source, 'local');
-    assert.equal(res.body.picks.length, 3);
+    assert.ok(res.body.course.stops.length >= 1);
+    assert.ok(res.body.course.stops.every(s => PLACE_BY_ID.has(s.id)));
   } finally {
     restore();
   }
 });
 
-test('라우터가 목록에 없는 id를 돌려주면 폴백한다', async () => {
-  const restore = stubRouter({ topId: '스타필드 안성', altIds: ['없는곳'], note: '지어낸 답' });
+test('라우터가 만들어내지 않은 코스 id를 돌려주면 폴백한다', async () => {
+  const restore = stubRouter({ courseId: 'starfield+anseong', note: '지어낸 코스' });
   try {
     const res = await invoke({ lat: INCHEON_STN[0], lng: INCHEON_STN[1], minutes: 90, transport: 'transit', purpose: 'solo_meal' });
     assert.equal(res.body.source, 'local');
-    assert.ok(res.body.picks.every(p => PLACE_BY_ID.has(p.id)));
+    assert.notEqual(res.body.note, '지어낸 코스');
+    assert.ok(res.body.course.stops.every(s => PLACE_BY_ID.has(s.id)));
   } finally {
     restore();
   }
 });
 
-test('라우터가 유효한 id를 돌려주면 그 순서와 문구를 쓴다', async () => {
+test('라우터가 고른 코스와 문구를 쓰되 동선은 서버 계산을 유지한다', async () => {
+  const input = { coord: INCHEON_STN, transport: 'transit', minutes: 120, purpose: 'solo_meal', now: undefined };
+  const generated = buildCourses(input, 3);
+  const target = generated[1] ?? generated[0];
+
   const restore = stubRouter({
-    topId: 'gaehangro',
-    altIds: ['sinpo_market'],
-    reasons: { gaehangro: '지금 시간이면 줄이 짧아요.' },
-    note: '개항로부터 시작하는 걸 추천해요.'
+    courseId: target.id,
+    reasons: { [target.stops[0].place.id]: '지금 시간이면 줄이 짧아요.' },
+    note: '여기부터 도는 게 나아요.'
   });
   try {
     const res = await invoke({ lat: INCHEON_STN[0], lng: INCHEON_STN[1], minutes: 120, transport: 'transit', purpose: 'solo_meal' });
     assert.equal(res.body.source, 'router');
-    assert.equal(res.body.picks[0].id, 'gaehangro');
-    assert.equal(res.body.picks[0].reason, '지금 시간이면 줄이 짧아요.');
-    assert.equal(res.body.picks.length, 3, '모델이 2곳만 골라도 결정론적 순위로 채운다');
+    assert.equal(res.body.course.id, target.id);
+    assert.equal(res.body.course.stops[0].reason, '지금 시간이면 줄이 짧아요.');
+    assert.equal(res.body.note, '여기부터 도는 게 나아요.');
+    // 모델은 문구만 바꿀 수 있다. 시간 계산은 서버 것이 그대로 남아야 한다.
+    assert.equal(res.body.course.totalMin, target.totalMin);
+    assert.ok(res.body.course.totalMin <= 120);
   } finally {
     restore();
   }
@@ -98,10 +168,10 @@ test('서비스 범위 밖 좌표는 400', async () => {
   assert.equal(res.status, 400);
 });
 
-test('후보가 하나도 없으면 빈 결과와 안내 문구를 준다', () => {
+test('코스를 못 짜면 빈 결과와 안내 문구를 준다', () => {
   const none = recommendLocally({ coord: INCHEON_STN, transport: 'walk', minutes: 25, purpose: 'with_kids', now: SAT_1400 });
-  assert.equal(none.picks.length, 0);
-  assert.match(none.note, /찾지 못했어요/);
+  assert.equal(none.course, null);
+  assert.match(none.note, /코스가 없어요/);
 });
 
 /* ------------------------------------------------------------------ 헬퍼 */

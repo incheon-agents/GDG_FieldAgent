@@ -37,6 +37,9 @@ const els = {
   results: $('#results'),
   resultBadge: $('#resultBadge'),
   primaryCard: $('#primaryCard'),
+  courseSteps: $('#courseSteps'),
+  courseSummary: $('#courseSummary'),
+  altTitle: $('#altTitle'),
   alternatives: $('#alternatives'),
   agentNote: $('#agentNote'),
   status: $('#status')
@@ -203,18 +206,23 @@ function showStatus(text) {
 /* ------------------------------------------------------------------ 렌더 */
 
 function render(result) {
-  const picks = result.picks ?? [];
-  if (picks.length === 0) {
+  const course = result.course;
+  if (!course || course.stops.length === 0) {
     els.results.hidden = true;
-    showStatus(result.note ?? '지금 조건으로는 갈 만한 곳을 찾지 못했어요.');
+    showStatus(result.note ?? '지금 조건으로는 짤 수 있는 코스가 없어요.');
     return;
   }
   showStatus('');
 
-  const [top, ...rest] = picks;
+  const [first, ...rest] = course.stops;
+  const others = result.otherCourses ?? [];
+
   els.resultBadge.textContent = badgeFor(result);
-  els.primaryCard.replaceChildren(...primaryNodes(top));
-  els.alternatives.replaceChildren(...rest.map(alternativeNode));
+  els.primaryCard.replaceChildren(...primaryNodes(first, course.stops.length));
+  els.courseSteps.replaceChildren(...rest.map((stop, i) => stepNode(stop, i + 2)));
+  els.courseSummary.textContent = summaryFor(course);
+  els.altTitle.hidden = others.length === 0;
+  els.alternatives.replaceChildren(...others.map(alternativeNode));
   els.agentNote.textContent = noteFor(result);
 
   els.results.hidden = false;
@@ -222,8 +230,14 @@ function render(result) {
 }
 
 function badgeFor(result) {
-  if (result.source === 'router') return 'AGENT PICK · LIVE';
-  return result.degraded ? 'AGENT PICK · OFFLINE' : 'AGENT PICK';
+  if (result.source === 'router') return 'AGENT COURSE · LIVE';
+  return result.degraded ? 'AGENT COURSE · OFFLINE' : 'AGENT COURSE';
+}
+
+function summaryFor(course) {
+  const total = `총 ${course.totalMin}분`;
+  const slack = course.slackMin > 5 ? ` · 여유 ${course.slackMin}분` : ' · 시간 딱 맞음';
+  return `${course.stops.length}곳 · ${total}${slack}`;
 }
 
 function noteFor(result) {
@@ -246,35 +260,47 @@ const STATE_LABEL = {
 };
 
 /** 모델이 만든 문자열이 섞이므로 innerHTML을 쓰지 않는다. */
-function primaryNodes(pick) {
-  const type = el('div', 'place-type', pick.type);
-  const name = el('h3', null, pick.name);
-  const meta = el('div', 'place-meta', metaLine(pick));
-  const reason = el('div', 'reason', pick.reason);
+function primaryNodes(stop, stopCount) {
+  const badge = el('div', 'place-type', `1코스 / 총 ${stopCount}곳 · ${stop.type}`);
+  const name = el('h3', null, stop.name);
+  const meta = el('div', 'place-meta', metaLine(stop, true));
+  const reason = el('div', 'reason', stop.reason);
 
   const link = document.createElement('a');
   link.className = 'navigate';
   link.target = '_blank';
   link.rel = 'noopener';
-  link.href = pick.map;
-  link.textContent = '이곳으로 출발하기 →';
+  link.href = stop.map;
+  link.textContent = '여기부터 출발하기 →';
 
-  return [type, name, meta, reason, link];
+  return [badge, name, meta, reason, link];
 }
 
-function alternativeNode(pick) {
+function stepNode(stop, order) {
+  const item = el('li', 'course-step');
+  const head = el('div', 'course-step-head');
+  head.append(el('span', 'course-step-order', `${order}코스`), el('strong', null, stop.name));
+
+  item.append(head, el('div', 'course-step-meta', metaLine(stop, false)), el('p', 'course-step-reason', stop.reason));
+  return item;
+}
+
+function alternativeNode(course) {
   const wrap = el('div', 'alternative');
   const left = el('div');
-  left.append(el('strong', null, pick.name), el('small', null, metaLine(pick)));
-  wrap.append(left, el('span', null, `${pick.travelMin}분`));
-  wrap.title = pick.reason;
+  left.append(
+    el('strong', null, course.stops.map(s => s.name).join(' → ')),
+    el('small', null, `${course.stops.length}곳 · 총 ${course.totalMin}분 · 첫 이동 ${course.stops[0].travelMin}분`)
+  );
+  wrap.append(left);
   return wrap;
 }
 
-function metaLine(pick) {
+function metaLine(stop, isFirst) {
   const transport = { walk: '도보', transit: '대중교통', car: '차량' }[state.transport];
-  const openLabel = STATE_LABEL[pick.openState] ?? '';
-  return `${transport} ${pick.travelMin}분 · 약 ${pick.stayMin}분${openLabel ? ` · ${openLabel}` : ''}`;
+  const openLabel = STATE_LABEL[stop.openState] ?? '';
+  const leg = isFirst ? `${transport} ${stop.travelMin}분` : `앞 코스에서 ${stop.travelMin}분`;
+  return `${leg} · ${stop.arrivalAt} 도착 · ${stop.stayMin}분 머물기${openLabel ? ` · ${openLabel}` : ''}`;
 }
 
 function el(tag, className, text) {
