@@ -280,6 +280,16 @@ h1 > span {
 
 .action:disabled { background: #e8eee4; color: #405b44; cursor: default; }
 
+/* 지도 링크도 같은 버튼 모양을 쓴다. a 태그라 정렬·밑줄을 따로 잡아 준다. */
+.link-action {
+  text-align: center;
+  text-decoration: none;
+  line-height: 20px;
+  background: #f6ca73;
+  color: #1d3b34;
+  font-weight: 700;
+}
+
 .tag {
   font-size: 10px;
   color: #8c6642;
