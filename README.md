@@ -49,11 +49,15 @@
 | `lib/recommend.js` | 순수 로직: 이동시간 추정, 영업 상태, 코스 탐색. 브라우저와 서버가 **같은 코드**를 쓴다 |
 | `api/recommend.js` | Vercel 서버리스 함수. 날씨 조회 + Gemini 호출 + 코스 id 검증 |
 | `test/recommend.test.js` | `node:test` 기반 테스트 (네트워크 없이 실행) |
+| `.github/workflows/ci.yml` | PR마다 Node 20·22에서 테스트 실행 |
 
 ## 실행
 
+테스트는 네트워크 없이 돌아갑니다. 날씨와 모델 호출은 전부 스텁으로 가로채므로
+CI에서 외부 서비스 장애에 영향받지 않습니다.
+
 ```bash
-# 프런트엔드만 (라우터 없이 로컬 추천으로 동작)
+# 프런트엔드만 (모델 없이 로컬 추천으로 동작)
 python3 -m http.server 8000
 
 # 서버리스 함수까지
