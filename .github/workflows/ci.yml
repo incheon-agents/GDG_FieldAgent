@@ -31,10 +31,10 @@ jobs:
           node-version: ${{ matrix.node }}
           # 의존성이 없어 lockfile도 없다. 캐시를 켜면 오히려 실패한다.
 
-      # 테스트는 lib/ 와 api/ 만 import 한다. app.js는 DOM이 필요해 import할 수 없으므로
-      # 최소한 문법 오류는 여기서 잡는다.
+      # 테스트는 lib/ 와 api/ 만 import 한다. 브라우저 진입점은 DOM이 필요해
+      # import할 수 없으므로, 최소한 문법 오류는 여기서 잡는다.
       - name: Syntax check
-        run: node --check app.js
+        run: node --check app.js && node --check chat.js
 
       - name: Test
         run: npm test
