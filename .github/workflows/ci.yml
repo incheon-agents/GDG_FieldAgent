@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+# 같은 브랜치에 새 푸시가 오면 이전 실행은 취소한다.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: test (node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # package.json의 engines가 >=20. Vercel 런타임과 로컬 최신을 같이 본다.
+        node: ['20', '22']
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ matrix.node }}
+          # 의존성이 없어 lockfile도 없다. 캐시를 켜면 오히려 실패한다.
+
+      # 테스트는 lib/ 와 api/ 만 import 한다. app.js는 DOM이 필요해 import할 수 없으므로
+      # 최소한 문법 오류는 여기서 잡는다.
+      - name: Syntax check
+        run: node --check app.js
+
+      - name: Test
+        run: npm test

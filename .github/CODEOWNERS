@@ -1,0 +1,12 @@
+# 코드 소유자 — PR이 열리면 여기 적힌 사람들에게 자동으로 리뷰가 요청됩니다.
+#
+# 주의 1: 쓰기(write) 권한이 없는 사용자는 GitHub가 조용히 무시합니다.
+#         리뷰 요청이 안 가면 저장소 Settings → Collaborators에서 권한부터 확인하세요.
+# 주의 2: PR 작성자 본인에게는 리뷰가 요청되지 않습니다.
+# 주의 3: 이 파일만으로는 머지가 막히지 않습니다. 코드 소유자 승인을 필수로 만들려면
+#         main 브랜치 보호 규칙에서 "Require review from Code Owners"를 켜야 합니다.
+#
+# 저장소가 작아 경로별 분리 없이 전체를 팀 전원이 봅니다.
+# 파일이 늘어나면 아래에 경로별 규칙을 추가하세요 (뒤에 오는 규칙이 우선).
+
+* @AndrewDongminYoo @Batjimin @minseong0609 @infakeritrust-cmd

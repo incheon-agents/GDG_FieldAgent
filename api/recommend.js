@@ -3,7 +3,7 @@
  *
  * 역할
  *  1) 결정론적 로직으로 "지금 갈 수 있는" 후보를 먼저 추린다.
- *  2) RunYourAI 라우터에 순위 결정과 문구 작성만 맡긴다. (장소 생성은 맡기지 않는다)
+ *  2) Vercel AI Gateway 경유 Gemini에 "어느 코스를 고를지 + 뭐라고 설명할지"만 맡긴다.
  *  3) 키가 없거나 호출이 실패하면 1)의 결과를 그대로 돌려준다.
  *
  * 장소를 모델이 만들어내게 하면 존재하지 않는 가게와 깨진 지도 링크가 나온다.
@@ -13,7 +13,7 @@
 import { buildCourses, toCoursePayload, describeCourse, recommendLocally } from '../lib/recommend.js';
 import { PURPOSES } from '../lib/places.js';
 
-const ROUTER_TIMEOUT_MS = 4500;
+const MODEL_TIMEOUT_MS = 4500;
 const WEATHER_TIMEOUT_MS = 1500;
 const MAX_NOTE_LEN = 160;
 const PURPOSE_IDS = new Set(PURPOSES.map(p => p.id));
@@ -38,7 +38,7 @@ export default async function handler(req, res) {
     return res.status(200).json({ ...recommendLocally({ ...input, isRaining }), isRaining });
   }
 
-  const routed = await routeWithRunYourAI({ input, courses, isRaining });
+  const routed = await askGemini({ input, courses, isRaining });
   const result = routed ?? localResult(courses);
 
   res.setHeader('Cache-Control', 'no-store');
@@ -94,14 +94,27 @@ async function fetchIsRaining([lat, lng]) {
   }
 }
 
-/* ---------------------------------------------------------------- 라우터 */
+/* ------------------------------------------------------------ AI Gateway */
 
-async function routeWithRunYourAI({ input, courses, isRaining }) {
-  const apiKey = process.env.RUNYOURAI_API_KEY;
-  const baseUrl = process.env.RUNYOURAI_BASE_URL;
-  const model = process.env.RUNYOURAI_MODEL;
-  if (!apiKey || !baseUrl || !model) return null;
+/**
+ * Vercel AI Gateway의 OpenAI 호환 Chat Completions 엔드포인트로 Gemini를 호출한다.
+ *
+ * Vercel에 배포되면 `VERCEL_OIDC_TOKEN`이 자동으로 주입되므로 키를 따로 두지 않아도 되고,
+ * 로컬이나 다른 호스트에서는 `AI_GATEWAY_API_KEY`를 쓴다. 둘 다 없으면 호출을 건너뛴다.
+ *
+ * 공식 SDK(`ai` + `@ai-sdk/openai-compatible`) 대신 fetch를 쓰는 이유는
+ * 이 저장소가 의존성 0개이고, 여기서 쓰는 건 문서화된 Chat Completions 한 번의 호출뿐이라
+ * SDK가 주는 이점(스트리밍, 툴 콜, 멀티 프로바이더 추상화)이 하나도 필요 없기 때문이다.
+ * 스트리밍이나 툴 콜이 필요해지는 시점에 SDK로 갈아타면 된다.
+ */
+const GATEWAY_BASE_URL = process.env.AI_GATEWAY_BASE_URL ?? 'https://ai-gateway.vercel.sh/v1';
+const DEFAULT_MODEL = 'google/gemini-3.8-flash';
 
+async function askGemini({ input, courses, isRaining }) {
+  const token = process.env.AI_GATEWAY_API_KEY || process.env.VERCEL_OIDC_TOKEN;
+  if (!token) return null;
+
+  const model = process.env.GEMINI_MODEL || DEFAULT_MODEL;
   const body = {
     model,
     temperature: 0.7,
@@ -114,10 +127,10 @@ async function routeWithRunYourAI({ input, courses, isRaining }) {
   };
 
   try {
-    const json = await fetchJson(`${baseUrl.replace(/\/$/, '')}/chat/completions`, {
+    const json = await fetchJson(`${GATEWAY_BASE_URL.replace(/\/$/, '')}/chat/completions`, {
       method: 'POST',
-      timeoutMs: ROUTER_TIMEOUT_MS,
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+      timeoutMs: MODEL_TIMEOUT_MS,
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
       body: JSON.stringify(body)
     });
 
@@ -125,9 +138,9 @@ async function routeWithRunYourAI({ input, courses, isRaining }) {
     const parsed = parseJsonLoosely(content);
     if (!parsed) return null;
 
-    return applyRouterChoice(parsed, courses, model);
+    return applyModelChoice(parsed, courses, model);
   } catch (err) {
-    console.error('[runyourai] routing failed:', err.message);
+    console.error('[ai-gateway] gemini call failed:', err.message);
     return null;
   }
 }
@@ -187,7 +200,7 @@ const formatClockFromStop = s => {
  * 코스 자체는 서버가 만든 것 중에서만 나올 수 있으므로,
  * 존재하지 않는 장소나 시간이 안 맞는 동선이 응답에 섞일 여지가 없다.
  */
-function applyRouterChoice(parsed, courses, model) {
+function applyModelChoice(parsed, courses, model) {
   const chosen = courses.find(c => c.id === parsed.courseId);
   if (!chosen) return null;
 
@@ -199,7 +212,7 @@ function applyRouterChoice(parsed, courses, model) {
   }));
 
   return {
-    source: 'router',
+    source: 'model',
     model,
     course: payload,
     otherCourses: courses.filter(c => c.id !== chosen.id).map(toCoursePayload),

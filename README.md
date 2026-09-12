@@ -21,7 +21,7 @@
    │                        │     시간 예산 안에 들어맞는 코스만 생성
    │                        │  3. 각 장소의 도착 시각 기준으로 영업 상태 확인
    │                        │  4. Open-Meteo로 현재 강수 확인 → 비 오면 실내만으로 탐색
-   │                        │  5. 상위 3개 코스를 RunYourAI 라우터에 넘겨
+   │                        │  5. 상위 3개 코스를 Gemini(Vercel AI Gateway)에 넘겨
    │                        │     "어느 코스를 고를지 + 뭐라고 설명할지"만 위임
    │                        │  6. 반환된 코스 id를 화이트리스트로 검증
    │                        └─ 실패/타임아웃/키 없음 → 4번까지의 결정론적 결과
@@ -29,7 +29,7 @@
    └─ /api 자체가 없으면 (GitHub Pages) 같은 로직을 브라우저에서 실행
 ```
 
-**코스를 모델이 만들게 하지 않습니다.** 코스 후보는 서버가 계산해서 고정하고, 라우터는
+**코스를 모델이 만들게 하지 않습니다.** 코스 후보는 서버가 계산해서 고정하고, 모델은
 그중 하나를 고르고 말로 설명하는 일만 합니다. 반환된 코스 id가 후보 밖이면 전부 버리고
 결정론적 결과로 떨어집니다. 시간 계산은 어느 경로로 가든 서버 것이 그대로 남으므로,
 존재하지 않는 장소나 시간이 안 맞는 동선이 화면에 나올 경로가 없습니다.
@@ -47,13 +47,17 @@
 | `index.html`, `styles.css`, `app.js` | 정적 프런트엔드. 모듈 스크립트, 빌드 없음 |
 | `lib/places.js` | 장소 데이터 (좌표·목적 태그·체류시간·영업시간·실내 여부) |
 | `lib/recommend.js` | 순수 로직: 이동시간 추정, 영업 상태, 코스 탐색. 브라우저와 서버가 **같은 코드**를 쓴다 |
-| `api/recommend.js` | Vercel 서버리스 함수. 날씨 조회 + RunYourAI 라우터 호출 + 코스 id 검증 |
+| `api/recommend.js` | Vercel 서버리스 함수. 날씨 조회 + Gemini 호출 + 코스 id 검증 |
 | `test/recommend.test.js` | `node:test` 기반 테스트 (네트워크 없이 실행) |
+| `.github/workflows/ci.yml` | PR마다 Node 20·22에서 테스트 실행 |
 
 ## 실행
 
+테스트는 네트워크 없이 돌아갑니다. 날씨와 모델 호출은 전부 스텁으로 가로채므로
+CI에서 외부 서비스 장애에 영향받지 않습니다.
+
 ```bash
-# 프런트엔드만 (라우터 없이 로컬 추천으로 동작)
+# 프런트엔드만 (모델 없이 로컬 추천으로 동작)
 python3 -m http.server 8000
 
 # 서버리스 함수까지
@@ -63,23 +67,30 @@ npx vercel dev
 npm test
 ```
 
-## RunYourAI 라우터 연결
+## Gemini 연결 (Vercel AI Gateway)
 
-[RunYourAI](https://www.runyour.ai/)의 [Runyour Agent](https://agent.runyour.ai/)는 API Key 하나로
-여러 LLM을 호출하는 게이트웨이입니다. 토큰 종량제이고 조직·개인 단위 예산 상한을 걸 수 있습니다.
+[Vercel AI Gateway](https://vercel.com/docs/ai-gateway)의 OpenAI 호환 Chat Completions
+엔드포인트로 Gemini를 호출합니다.
 
-`.env.example`의 세 값을 채우면 라우터를 사용하고, 하나라도 비면 로컬 추천으로 동작합니다.
+```
+POST https://ai-gateway.vercel.sh/v1/chat/completions
+Authorization: Bearer <AI_GATEWAY_API_KEY | VERCEL_OIDC_TOKEN>
+{ "model": "google/gemini-3.8-flash", ... }
+```
 
-> ⚠️ 이 코드를 작성한 시점에 라우터의 공개 개발자 문서를 찾지 못해,
-> `api/recommend.js`는 **OpenAI 호환 `POST {BASE_URL}/chat/completions` + `Authorization: Bearer`** 를 가정합니다.
-> 콘솔에서 실제 스펙을 확인한 뒤 `routeWithRunYourAI()`의 요청 조립과 응답 파싱만 맞추면 됩니다.
-> 그 외 코드는 라우터 스펙에 의존하지 않습니다.
+**Vercel에 배포하면 키 설정이 필요 없습니다.** 배포 시 `VERCEL_OIDC_TOKEN`이 자동 주입되고
+`askGemini()`가 그걸 씁니다. 로컬 `vercel dev`나 다른 호스트에서만 `AI_GATEWAY_API_KEY`가
+필요합니다. 모델은 `GEMINI_MODEL`로 바꿀 수 있고, 비우면 `google/gemini-3.8-flash`입니다.
+이 작업은 추론 난이도가 낮고 응답 속도가 곧 체감 품질이라 flash 계열이면 충분합니다.
 
-**API 키는 절대 프런트엔드에 넣지 마세요.** 정적 페이지에 박은 키는 devtools를 여는 누구나
-꺼내 쓸 수 있고, 그대로 토큰 예산이 됩니다. 서버리스 함수를 두는 이유가 이것입니다.
+공식 SDK(`ai` + `@ai-sdk/openai-compatible`) 대신 `fetch`를 씁니다. 이 저장소는 의존성이
+0개이고 여기서 필요한 건 문서화된 Chat Completions 한 번의 호출뿐이라, SDK가 주는
+스트리밍·툴 콜·프로바이더 추상화가 하나도 쓰이지 않기 때문입니다. 그 중 하나가 필요해지는
+시점에 갈아타면 됩니다.
 
-현재 `/api/recommend`에는 인증도 레이트리밋도 없습니다. 해커톤 데모 범위에서는 괜찮지만
-공개 배포 시에는 호출 상한(IP별 제한, Vercel 상의 KV 카운터 등)을 먼저 붙이세요.
+키를 만들 때 **budget(예산 상한)을 함께 걸어 두세요.** 현재 `/api/recommend`에는 인증도
+레이트리밋도 없어서, 엔드포인트를 아는 사람은 누구나 호출할 수 있습니다. 해커톤 데모
+범위에서는 괜찮지만 공개 배포 전에는 호출 상한(IP별 제한, Vercel KV 카운터 등)이 필요합니다.
 
 ## 알려진 한계
 
@@ -90,5 +101,5 @@ npm test
   늘면 `searchCourses()`의 탐색 전략부터 손봐야 합니다 (`SEARCH_POOL` 참고).
 - **좌표는 대표 지점 근사값, 영업시간은 데모용 기본값입니다.** 실제 서비스 전에
   현장 확인이나 공공데이터로 교체해야 합니다. 틀린 영업시간은 사용자를 헛걸음시킵니다.
-- 현장 메모는 라우터를 거칠 때만 추천에 반영됩니다. 로컬 폴백에서는 그 사실을 화면에 표시합니다.
-- 사용자가 남긴 메모는 제3자 LLM 게이트웨이로 전송됩니다. 공개 서비스로 전환한다면 고지가 필요합니다.
+- 현장 메모는 모델을 거칠 때만 추천에 반영됩니다. 로컬 폴백에서는 그 사실을 화면에 표시합니다.
+- 사용자가 남긴 메모는 Vercel AI Gateway를 거쳐 Google로 전송됩니다. 공개 서비스로 전환한다면 고지가 필요합니다.
