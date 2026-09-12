@@ -24,6 +24,12 @@ export default async function handler(req, res) {
   if (req.method === 'OPTIONS') return res.status(204).end();
   if (req.method !== 'POST') return res.status(405).json({ error: 'method_not_allowed' });
 
+  const limit = takeToken(clientKey(req));
+  if (!limit.allowed) {
+    res.setHeader('Retry-After', String(limit.retryAfterSec));
+    return res.status(429).json({ error: 'rate_limited', retryAfterSec: limit.retryAfterSec });
+  }
+
   let input;
   try {
     input = parseInput(req.body);
@@ -54,6 +60,54 @@ function localResult(courses) {
     note: describeCourse(best)
   };
 }
+
+/* ------------------------------------------------------------ 레이트리밋 */
+
+/**
+ * IP당 슬라이딩 윈도 제한.
+ *
+ * ⚠️ 이 카운터는 **서버리스 인스턴스 메모리**에만 있습니다. Vercel이 인스턴스를
+ *    여러 개 띄우면 각자 따로 세고, 인스턴스가 잠들면 리셋됩니다. 즉 결정론적인
+ *    상한이 아니라, 한 곳에서 쏟아지는 호출의 기울기를 꺾는 정도입니다.
+ *    실제 상한이 필요하면 Vercel KV처럼 공유 저장소로 옮겨야 합니다.
+ *
+ * 그래도 두는 이유: 토큰 예산이 실제 비용이고, 지금은 아무 제한도 없기 때문입니다.
+ * AI Gateway 키의 budget 설정이 최종 방어선이고 이건 1차 완충입니다.
+ */
+const RATE_LIMIT = { windowMs: 60_000, maxRequests: 20 };
+const hits = new Map();
+
+function takeToken(key, now = Date.now()) {
+  const cutoff = now - RATE_LIMIT.windowMs;
+  const recent = (hits.get(key) ?? []).filter(at => at > cutoff);
+
+  if (recent.length >= RATE_LIMIT.maxRequests) {
+    hits.set(key, recent);
+    const retryAfterSec = Math.max(1, Math.ceil((recent[0] + RATE_LIMIT.windowMs - now) / 1000));
+    return { allowed: false, retryAfterSec };
+  }
+
+  recent.push(now);
+  hits.set(key, recent);
+
+  // 유휴 인스턴스에서 Map이 무한정 자라지 않도록 오래된 키를 걷어낸다.
+  if (hits.size > 5_000) {
+    for (const [k, times] of hits) {
+      if (times[times.length - 1] <= cutoff) hits.delete(k);
+    }
+  }
+
+  return { allowed: true };
+}
+
+/** Vercel은 x-forwarded-for 맨 앞에 클라이언트 IP를 넣는다. */
+function clientKey(req) {
+  const forwarded = req.headers['x-forwarded-for'];
+  const first = Array.isArray(forwarded) ? forwarded[0] : String(forwarded ?? '').split(',')[0];
+  return first.trim() || req.socket?.remoteAddress || 'unknown';
+}
+
+export const __test = { takeToken, resetRateLimit: () => hits.clear() };
 
 /* ---------------------------------------------------------------- 입력 */
 

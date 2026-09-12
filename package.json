@@ -6,7 +6,8 @@
   "description": "지금갈래? — 현재 위치·시간·상황 기반 인천 즉시 출발 큐레이터",
   "scripts": {
     "dev": "vercel dev",
-    "test": "node --test test/*.test.js"
+    "test": "node --test test/*.test.js",
+    "sync:hours": "node scripts/sync-hours.mjs"
   },
   "engines": {
     "node": ">=20"

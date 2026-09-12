@@ -199,6 +199,51 @@ test('OIDC 토큰만 있어도 호출한다 (Vercel 배포 기본 경로)', asyn
   }
 });
 
+test('같은 IP가 분당 상한을 넘으면 429와 Retry-After를 준다', async () => {
+  const { __test } = await import('../api/recommend.js');
+  __test.resetRateLimit();
+  try {
+    const now = Date.now();
+    let last;
+    // 상한(20)까지는 통과해야 한다.
+    for (let i = 0; i < 20; i++) last = __test.takeToken('1.2.3.4', now);
+    assert.equal(last.allowed, true, '상한 이내인데 막혔다');
+
+    const blocked = __test.takeToken('1.2.3.4', now);
+    assert.equal(blocked.allowed, false);
+    assert.ok(blocked.retryAfterSec > 0 && blocked.retryAfterSec <= 60);
+
+    // 다른 IP는 영향을 받지 않는다.
+    assert.equal(__test.takeToken('5.6.7.8', now).allowed, true);
+
+    // 윈도가 지나면 다시 열린다.
+    assert.equal(__test.takeToken('1.2.3.4', now + 60_001).allowed, true);
+  } finally {
+    __test.resetRateLimit();
+  }
+});
+
+test('레이트리밋에 걸리면 코스 계산도 모델 호출도 하지 않는다', async () => {
+  const { __test } = await import('../api/recommend.js');
+  __test.resetRateLimit();
+  const seen = [];
+  const restore = stubModel({ courseId: 'nope' }, seen);
+  try {
+    const req = { lat: INCHEON_STN[0], lng: INCHEON_STN[1], minutes: 90, transport: 'transit', purpose: 'solo_meal' };
+    for (let i = 0; i < 20; i++) await invoke(req, { 'x-forwarded-for': '9.9.9.9' });
+
+    const callsBefore = seen.length;
+    const res = await invoke(req, { 'x-forwarded-for': '9.9.9.9' });
+
+    assert.equal(res.status, 429);
+    assert.equal(res.body.error, 'rate_limited');
+    assert.equal(seen.length, callsBefore, '429인데 외부 호출이 나갔다');
+  } finally {
+    restore();
+    __test.resetRateLimit();
+  }
+});
+
 test('서비스 범위 밖 좌표는 400', async () => {
   const res = await invoke({ lat: 35.1796, lng: 129.0756, minutes: 90 }); // 부산
   assert.equal(res.status, 400);
@@ -212,8 +257,8 @@ test('코스를 못 짜면 빈 결과와 안내 문구를 준다', () => {
 
 /* ------------------------------------------------------------------ 헬퍼 */
 
-async function invoke(body) {
-  const req = { method: 'POST', body, headers: {} };
+async function invoke(body, headers = {}) {
+  const req = { method: 'POST', body, headers };
   const captured = {};
   const res = {
     status(code) { captured.status = code; return this; },
