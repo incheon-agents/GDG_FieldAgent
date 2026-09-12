@@ -1,25 +1,23 @@
 /**
- * "인천이니?" 챗봇 UI 데모.
+ * "인천이니?" 챗봇 화면.
  *
- * 이 화면은 대화 흐름과 화면 구성을 보여주는 UI 데모입니다.
- * 코스·인물·시간은 아래 상수에 박혀 있는 예시이며, 실제 거리·영업시간 계산은
- * `lib/recommend.js`의 코스 탐색 엔진이 담당합니다 (curator.html).
- * 이 데모를 실제 엔진에 연결하려면 course()에서 POST /api/recommend 를 호출하면 됩니다.
+ * 코스는 더 이상 예시가 아닙니다. "강제 코스"는 curator.html과 **같은 엔진**을 씁니다.
+ *   1) POST /api/recommend — 좌표 기반 코스 탐색 + 영업시간 + 날씨 + Gemini 문구
+ *   2) 실패하면 같은 로직을 브라우저에서 직접 실행 (lib/recommend.js)
+ * 그래서 네트워크가 끊겨도, /api 가 없는 정적 호스팅에서도 실제 장소와 시간이 나옵니다.
+ *
+ * 동행자(people)는 아직 가상 인물 데모입니다. 화면에 그렇게 표시합니다.
  */
 
 import { LANDMARKS } from './lib/places.js';
+import { recommendLocally } from './lib/recommend.js';
 
-/** 출발지별 예시 동선. 키는 LANDMARKS의 label과 정확히 일치해야 한다. */
-const DEMO_ROUTES = {
-  '인천역 · 차이나타운': ['차이나타운 골목 산책', '신포시장 먹거리 구경', '개항장 거리'],
-  '동인천역 · 개항로': ['개항로 골목 산책', '동인천 로컬 식당', '배다리 책방 거리'],
-  '월미도': ['문화의 거리 산책', '바다 앞 식사', '월미도 바다 구경'],
-  '송도 · 인천대입구역': ['센트럴파크 산책', '송도 식사 시간', '한옥마을 주변 구경'],
-  '구월동 · 인천시청역': ['중앙공원 산책', '구월동 식사 시간', '로데오 거리'],
-  '부평역': ['문화의 거리', '부평시장 먹거리 구경', '평리단길 산책'],
-  '소래포구': ['소래포구 산책', '시장 먹거리 구경', '포구 전망 구경'],
-  '인천공항 T1': ['터미널 실내 산책', '터미널 식사 시간', '실내 휴식']
-};
+const API_TIMEOUT_MS = 7000;
+
+/** 챗 화면은 이동수단을 묻지 않는다. 인천 시내 기준 가장 무난한 기본값. */
+const TRANSPORT = 'transit';
+const TRANSPORT_LABEL = { walk: '도보', transit: '대중교통', car: '차량' };
+const STATE_LABEL = { open: '영업 중', closing_soon: '곧 마감', always: '상시 개방' };
 
 /** 예시 동행자. 실제 주변인 조회가 아니라 화면 구성을 보여주기 위한 가상 인물. */
 const DEMO_COMPANIONS = [
@@ -28,10 +26,12 @@ const DEMO_COMPANIONS = [
   ['소라 · 인천 로컬', '밥 먹고 가볍게 산책 · 2명 · 17:00까지']
 ];
 
-const DEMO_MOODS = [
-  ['시장 한 바퀴', '신포시장 · 먹거리 구경과 가벼운 한 끼'],
-  ['골목 식당 찾기', '개항로 · 산책하다 만나는 작은 식당'],
-  ['커피 한 잔의 여유', '평리단길 · 개성 있는 카페 탐방']
+/** 분위기 카드. 고르면 그 목적(purpose)으로 실제 코스를 짠다. */
+const MOODS = [
+  ['시장 한 바퀴', '먹거리 구경과 가벼운 한 끼', 'solo_meal'],
+  ['골목 걷기', '산책하다 만나는 오래된 거리', 'walk'],
+  ['커피 한 잔의 여유', '조용히 앉아 있을 곳', 'quiet_cafe'],
+  ['사진 남기기', '한 장 건지고 오는 코스', 'photo']
 ];
 
 const LIFE_TOPICS = [
@@ -40,15 +40,14 @@ const LIFE_TOPICS = [
   ['🚻 화장실 찾기', '역사나 공공시설의 안내 표지를 확인해봐. 개방 여부와 이용시간은 현장에서 확인이 필요해.']
 ];
 
-/** 예시 코스의 총 이동시간(분). 실제 계산이 아니라 눈대중용 상수. */
-const DEMO_TRAVEL_MIN = 15;
-
 const log = document.querySelector('#messages');
 let chosen = LANDMARKS[0].label;
+/** 분위기 카드나 자유 입력에서 넘어온 목적. 코스 요청에 실어 보낸다. */
+let purpose = 'walk';
 
 /* ------------------------------------------------------------ 말풍선 조립 */
 
-/** 모든 텍스트는 textContent로만 넣는다. innerHTML은 쓰지 않는다. */
+/** 모든 텍스트는 textContent로만 넣는다. 모델이 쓴 문구가 섞이므로 innerHTML은 쓰지 않는다. */
 function message(text, fromUser = false) {
   const row = document.createElement('div');
   row.className = `message${fromUser ? ' user' : ''}`;
@@ -79,6 +78,17 @@ function action(parent, label, onClick) {
   button.addEventListener('click', () => onClick(button));
   parent.append(button);
   return button;
+}
+
+function linkAction(parent, label, href) {
+  const link = document.createElement('a');
+  link.className = 'action link-action';
+  link.target = '_blank';
+  link.rel = 'noopener';
+  link.href = href;
+  link.textContent = label;
+  parent.append(link);
+  return link;
 }
 
 function note(parent, text) {
@@ -120,7 +130,7 @@ function reveal() {
   log.lastElementChild?.scrollIntoView({ behavior: reduced ? 'auto' : 'smooth', block: 'start' });
 }
 
-/* ------------------------------------------------------------ 대화 흐름 */
+/* ------------------------------------------------------------ 코스 (실제) */
 
 function welcome() {
   log.replaceChildren();
@@ -142,39 +152,102 @@ function course() {
   );
   bubble.append(place.label, time.label);
 
-  action(bubble, '✦ 고민 끝! 코스 강제 배정', () => {
+  action(bubble, '✦ 고민 끝! 코스 강제 배정', async button => {
     chosen = place.select.value;
     const minutes = Number(time.select.value);
+    const landmark = LANDMARKS.find(mark => mark.label === chosen) ?? LANDMARKS[0];
 
+    button.disabled = true;
+    button.textContent = '코스 짜는 중…';
     message(`${chosen}에서 ${minutes}분! 코스 정해줘.`, true);
-    renderDemoCourse(chosen, minutes);
+    reveal();
+
+    const result = await requestCourse(landmark, minutes);
+    button.textContent = '✓ 코스 받았어';
+    renderCourse(result, landmark, minutes);
     reveal();
   });
 
   reveal();
 }
 
-function renderDemoCourse(from, minutes) {
-  const out = message('오늘은 이 순서로 가자. 고민은 여기서 끝!');
-  const stops = DEMO_ROUTES[from] ?? DEMO_ROUTES[LANDMARKS[0].label];
+/** 서버 → 실패 시 브라우저 로컬 계산. 둘 다 같은 lib/recommend.js 를 쓴다. */
+async function requestCourse(landmark, minutes) {
+  const [lat, lng] = landmark.coord;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), API_TIMEOUT_MS);
 
-  // 이동시간을 뺀 나머지를 세 곳에 고르게 나누고, 나머지는 마지막 장소가 흡수한다.
-  const share = Math.floor((minutes - DEMO_TRAVEL_MIN) / stops.length);
-  const lastShare = minutes - DEMO_TRAVEL_MIN - share * (stops.length - 1);
+  try {
+    const res = await fetch('/api/recommend', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal: controller.signal,
+      body: JSON.stringify({ lat, lng, minutes, transport: TRANSPORT, purpose })
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return await res.json();
+  } catch (err) {
+    console.warn('[chat] /api/recommend 실패, 로컬 계산으로 대체:', err.message);
+    return {
+      ...recommendLocally({ coord: landmark.coord, transport: TRANSPORT, minutes, purpose }),
+      degraded: true
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
-  stops.forEach((stop, index) => {
-    const isLast = index === stops.length - 1;
-    const stay = isLast ? lastShare : share;
-    const leg = isLast ? '' : ` · 다음 이동 예시 ${index === 0 ? 7 : 8}분`;
-    item(out, `${String(index + 1).padStart(2, '0')} · ${stop}`, `${stay}분 머무르기${leg}`);
+function renderCourse(result, landmark, minutes) {
+  const course = result.course;
+
+  if (!course || course.stops.length === 0) {
+    const bubble = message(`${landmark.label}에서 ${minutes}분으로는 갈 만한 코스를 못 찾았어. 😥\n시간을 늘리거나 다른 출발지를 골라볼래?`);
+    note(bubble, '이동시간과 영업시간을 실제로 계산하기 때문에, 안 되는 건 안 된다고 말해주는 거야.');
+    return;
+  }
+
+  const bubble = message('오늘은 이 순서로 가자. 고민은 여기서 끝!');
+  if (result.isRaining) note(bubble, '지금 비가 와서 실내 위주로 골랐어.');
+
+  course.stops.forEach((stop, index) => {
+    const card = item(
+      bubble,
+      `${String(index + 1).padStart(2, '0')} · ${stop.name}`,
+      legLine(stop, index === 0)
+    );
+    const reason = document.createElement('p');
+    reason.textContent = stop.reason;
+    card.append(reason);
   });
 
-  note(out, `총 ${minutes}분 (이동 예시 ${DEMO_TRAVEL_MIN}분 포함). 시연용 동선이며 거리·영업시간·이동시간은 검증되지 않았어요.`);
-  action(out, '마음에 들어 · 코스 담기', button => {
+  linkAction(bubble, `${course.stops[0].name}으로 출발하기 →`, course.stops[0].map);
+
+  const slack = course.slackMin > 5 ? `여유 ${course.slackMin}분` : '시간 딱 맞음';
+  note(bubble, `${course.stops.length}곳 · 총 ${course.totalMin}분 · ${slack} · ${sourceLabel(result)}`);
+
+  const others = result.otherCourses ?? [];
+  if (others.length > 0) {
+    note(bubble, `다른 코스: ${others.map(c => c.stops.map(s => s.name).join(' → ')).join(' / ')}`);
+  }
+
+  action(bubble, '마음에 들어 · 코스 담기', button => {
     button.textContent = '✓ 이번 대화에 담았어';
     button.disabled = true;
   });
 }
+
+function legLine(stop, isFirst) {
+  const leg = isFirst ? `${TRANSPORT_LABEL[TRANSPORT]} ${stop.travelMin}분` : `앞 코스에서 ${stop.travelMin}분`;
+  const state = STATE_LABEL[stop.openState];
+  return `${leg} · ${stop.arrivalAt} 도착 · ${stop.stayMin}분 머물기${state ? ` · ${state}` : ''}`;
+}
+
+function sourceLabel(result) {
+  if (result.source === 'model') return 'Gemini가 고른 코스';
+  return result.degraded ? '오프라인 계산' : '자동 계산';
+}
+
+/* ------------------------------------------------------------ 데모 영역 */
 
 function people() {
   const bubble = message('혼자 먹기 아쉬울 때, 같이 한 끼 어때? 🍚');
@@ -193,19 +266,19 @@ function people() {
   reveal();
 }
 
+/** 분위기를 고르면 그 목적으로 실제 코스 폼을 연다. */
 function food() {
-  const bubble = message('프랜차이즈 대신, 골목의 한 끼. 이런 분위기는 어때?');
+  const bubble = message('어떤 하루가 좋아? 고르면 그 느낌으로 코스를 짤게.');
 
-  for (const [name, detail] of DEMO_MOODS) {
+  for (const [name, detail, moodPurpose] of MOODS) {
     const card = item(bubble, name, detail);
-    action(card, '이 분위기로 이야기하기', () => {
+    action(card, '이 느낌으로 코스 짜줘', () => {
+      purpose = moodPurpose;
       message(`${name} 느낌이 좋아!`, true);
-      message('좋아! 강제 코스에서 출발 위치와 시간을 골라줘. 이 데모는 분위기 탐색용이라 실제 매장과 비체인 여부는 아직 연결하지 않았어.');
-      reveal();
+      course();
     });
   }
 
-  note(bubble, '지역 탐색 예시 · 실제 매장 추천/체인 여부 검증 전');
   reveal();
 }
 
@@ -230,16 +303,19 @@ const GUIDES = { course, people, food, life };
 /** 자유 입력은 키워드로 가이드에 연결한다. 실제 자연어 이해가 아니다. */
 const KEYWORD_ROUTES = [
   [/같이|동행|친구/, people],
-  [/맛집|밥|음식|카페/, food],
+  [/맛집|밥|음식|카페|혼밥/, food],
   [/교통|화장실|벤치|버스|지하철/, life],
-  [/코스|시간|추천/, course]
+  [/코스|시간|추천|어디/, course]
 ];
 
 for (const button of document.querySelectorAll('[data-guide]')) {
   button.addEventListener('click', () => GUIDES[button.dataset.guide]?.());
 }
 
-document.querySelector('#reset').addEventListener('click', welcome);
+document.querySelector('#reset').addEventListener('click', () => {
+  purpose = 'walk';
+  welcome();
+});
 
 document.querySelector('#composer').addEventListener('submit', event => {
   event.preventDefault();
@@ -257,7 +333,7 @@ document.querySelector('#composer').addEventListener('submit', event => {
     return;
   }
 
-  message('나는 지금 UI 데모 모드야. 자유로운 AI 답변은 아직 연결 전이지만, 위의 네 가지 가이드는 직접 눌러볼 수 있어. 먼저 강제 코스로 오늘 동선을 정해볼까?');
+  message('자유로운 대화는 아직 연결 전이야. 대신 위의 네 가지 가이드는 진짜로 동작해 — 강제 코스는 실제 이동시간과 영업시간을 계산해서 짜줄게.');
   reveal();
 });
 
